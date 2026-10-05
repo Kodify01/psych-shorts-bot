@@ -1,0 +1,96 @@
+name: Daily Short
+on:
+  schedule:
+    # GitHub cron is UTC. Morocco is UTC+1 (UTC+0 during Ramadan: add 1 to each hour then).
+    - cron: '0 12 * * *'   # 12:00 UTC = 1 PM Morocco
+    - cron: '0 18 * * *'   # 18:00 UTC = 7 PM Morocco
+    - cron: '0 21 * * *'   # 21:00 UTC = 10 PM Morocco
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build the video but do not upload or log (test run)'
+        type: boolean
+        default: false
+
+# One run at a time: a late run waits for the previous one instead of posting in parallel
+concurrency:
+  group: shorts-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install ffmpeg + fonts
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: npm install --no-audit --no-fund
+
+      # logs/ (topic history + CSV) is carried between runs so topics never repeat on the same day
+      - name: Restore logs
+        uses: actions/cache/restore@v4
+        with:
+          path: logs
+          key: logs-${{ github.run_id }}
+          restore-keys: logs-
+
+      - name: Check Composio tool schemas (non-blocking)
+        run: npm run schemas
+        continue-on-error: true
+        env:
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+
+      - name: Run automation
+        run: node automation.js
+        env:
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          COMPOSIO_USER_ID: ${{ secrets.COMPOSIO_USER_ID }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HF_API_KEY: ${{ secrets.HF_API_KEY }}
+          HF_API_SECRET: ${{ secrets.HF_API_SECRET }}
+          HF_MODEL: ${{ secrets.HF_MODEL }}
+          HF_MAX_CLIPS: ${{ secrets.HF_MAX_CLIPS }}
+          HF_EXTRA_JSON: ${{ secrets.HF_EXTRA_JSON }}
+          S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          S3_REGION: ${{ secrets.S3_REGION }}
+          S3_ACCESS_KEY_ID: ${{ secrets.S3_ACCESS_KEY_ID }}
+          S3_SECRET_ACCESS_KEY: ${{ secrets.S3_SECRET_ACCESS_KEY }}
+          S3_PUBLIC_BASE_URL: ${{ secrets.S3_PUBLIC_BASE_URL }}
+          S3_ENDPOINT: ${{ secrets.S3_ENDPOINT }}
+          LOG_MODE: ${{ secrets.LOG_MODE }}
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+          SHEET_NAME: ${{ secrets.SHEET_NAME }}
+          IG_ENCODE_HASHTAGS: ${{ secrets.IG_ENCODE_HASHTAGS }}
+          MAX_START_DELAY_MIN: ${{ secrets.MAX_START_DELAY_MIN }}
+
+      # Saved even when the run fails, so a failed run's topic is still remembered
+      - name: Save logs
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: logs
+          key: logs-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Keep videos + log row for 7 days
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            output/*.mp4
+            output/*.jpg
+            logs/
+          retention-days: 7
+          if-no-files-found: ignore
